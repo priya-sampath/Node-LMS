@@ -1,9 +1,9 @@
-import nodemailer from "nodemailer";
 import "dotenv/config";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import handlebars from "handlebars";
+import { sendEmail } from "./sendEmail.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,23 +24,9 @@ export const verifymail = async (token, email) => {
     frontendUrl,
   });
 
-  const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: process.env.MAIL_USER,
-      pass: process.env.MAIL_PASS, // Gmail App Password (16 chars, no spaces)
-    },
-  });
-
-  const mailConfigurations = {
-    from: process.env.MAIL_USER,
+  return sendEmail({
     to: email,
     subject: "Email verification",
     html: htmlToSend,
-  };
-
-  // Promise form: errors now reach the controller's try/catch
-  const info = await transporter.sendMail(mailConfigurations);
-  console.log("Email sent successfully:", info.messageId);
-  return info;
+  });
 };
