@@ -15,7 +15,14 @@ export const verifymail = async (token, email) => {
     "utf-8"
   );
   const template = handlebars.compile(emailTemplateSource);
-  const htmlToSend = template({ token: encodeURIComponent(token) });
+
+  // Remove a trailing slash so the link never has a double slash
+  const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
+
+  const htmlToSend = template({
+    token: encodeURIComponent(token),
+    frontendUrl,
+  });
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
