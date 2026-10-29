@@ -5,6 +5,46 @@ import { Session } from "../models/sessionModel.js";
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
 import { sendOtpMail } from "../emailVerify/sendOtpMail.js";
+// export const registerUser = async (req, res) => {
+//   try {
+//     const { username, email, password, role } = req.body;
+//     if (!username || !email || !password || !role) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "All fields are required"
+//       })
+//     }
+//     const existingUser = await Users.findOne({ email })
+//     if (existingUser) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "User Already Exists"
+//       })
+//     }
+
+//     const hashedPassword = await bcrypt.hash(password, 10);
+//     const newUser = await Users.create({
+//       username,
+//       email,
+//       password: hashedPassword,
+//       role: role
+//     });
+//     const token = await jwt.sign({ id: newUser._id }, process.env.SECRET_KEY, { expiresIn: "10m" })
+//     verifymail(token, email);
+//     newUser.token = token;
+//     await newUser.save();
+//     return res.status(201).json({
+//       success: true,
+//       message: "User registered successfully",
+//       data: newUser
+//     });
+//   } catch (error) {
+//     return res.status(500).json({
+//       success: false,
+//       message: error.message
+//     });
+//   }
+// }
 export const registerUser = async (req, res) => {
   try {
     const { username, email, password, role } = req.body;
@@ -12,14 +52,15 @@ export const registerUser = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "All fields are required"
-      })
+      });
     }
-    const existingUser = await Users.findOne({ email })
+
+    const existingUser = await Users.findOne({ email });
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: "User Already Exists"
-      })
+        message: "User already exists"
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -27,24 +68,43 @@ export const registerUser = async (req, res) => {
       username,
       email,
       password: hashedPassword,
-      role: role
+      role
     });
-    const token = await jwt.sign({ id: newUser._id }, process.env.SECRET_KEY, { expiresIn: "10m" })
-    verifymail(token, email);
+
+    const token = jwt.sign({ id: newUser._id }, process.env.SECRET_KEY, { expiresIn: "10m" });
+
+    try {
+      await verifymail(token, email);
+    } catch (err) {
+      console.error("Verification mail failed:", err);
+      await Users.findByIdAndDelete(newUser._id);
+      return res.status(500).json({
+        success: false,
+        message: "Could not send verification email. Please try again."
+      });
+    }
+
     newUser.token = token;
     await newUser.save();
+
     return res.status(201).json({
       success: true,
-      message: "User registered successfully",
-      data: newUser
+      message: "User registered successfully. Check your email to verify.",
+      data: {
+        id: newUser._id,
+        username: newUser.username,
+        email: newUser.email,
+        role: newUser.role
+      }
     });
   } catch (error) {
+    console.error("Register error:", error);
     return res.status(500).json({
       success: false,
       message: error.message
     });
   }
-}
+};
 
 
 export const verification = async (req, res) => {
