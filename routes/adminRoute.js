@@ -1,5 +1,5 @@
 import express from "express"
-import { getAllUsers, updateUserStatus, deleteUser, getDashboardStats, getAllCourses, deleteCourseAsAdmin, updateUserRole } from "../controllers/adminController.js"
+import { getAllUsers, updateUserStatus, deleteUser, getDashboardStats, getAllCourses, deleteCourseAsAdmin, updateUserRole, getPendingPayouts, markPayoutsPaid } from "../controllers/adminController.js"
 import { isAuthenticated } from "../middleware/isAuthenticated.js"
 import { isAdmin } from "../middleware/isAdmin.js"
 
@@ -12,5 +12,7 @@ adminRoute.patch('/users/:id/role', isAuthenticated, isAdmin, updateUserRole)
 adminRoute.delete('/users/:id', isAuthenticated, isAdmin, deleteUser)
 adminRoute.get('/courses', isAuthenticated, isAdmin, getAllCourses)
 adminRoute.delete('/courses/:id', isAuthenticated, isAdmin, deleteCourseAsAdmin)
+adminRoute.get('/payouts', isAuthenticated, isAdmin, getPendingPayouts)
+adminRoute.post('/payouts/mark-paid', isAuthenticated, isAdmin, markPayoutsPaid)
 
 export default adminRoute

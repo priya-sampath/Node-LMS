@@ -4,6 +4,7 @@ import { Reschedule } from "../models/rescheduleModel.js";
 import { SessionRecording } from "../models/sessionRecordingModel.js";
 import { doSchedulesConflict, isLiveNow, isWithinRescheduledSlotNow } from "../utils/liveSchedule.js";
 import { createVideoSdkMeeting, generateJoinToken, fetchLatestRecording } from "../utils/videosdk.js";
+import { parsePayoutDetails, hasPayoutFields } from "../utils/payout.js";
 
 // parses the liveSchedule fields out of req.body (sent as a multipart form, so
 // availableDays arrives as a JSON string, e.g. '["Monday","Wednesday"]')
@@ -41,6 +42,30 @@ const findScheduleConflict = async (tutorId, newSchedule, excludeCourseId) => {
     }
   }
   return null;
+}
+
+// returns the payout details from this tutor's most recently saved course, so
+// the "New Course" form can be pre-filled (the tutor can still change them)
+export const getLastPayoutDetails = async (req, res) => {
+  try {
+    const lastCourse = await Course.findOne({
+      tutorId: req.userId,
+      'payoutDetails.method': { $exists: true }
+    })
+      .sort({ updatedAt: -1 })
+      .select('+payoutDetails');
+
+    return res.status(200).json({
+      success: true,
+      message: "Payout details fetched successfully",
+      data: lastCourse?.payoutDetails || null
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
 }
 
 export const searchCourses = async (req, res) => {
@@ -88,6 +113,20 @@ export const createCourse = async (req, res) => {
 
     const isLiveOn = liveClassAvailable === 'true' || liveClassAvailable === true;
     const isRecordedOn = recordedVideoAvailable === 'true' || recordedVideoAvailable === true;
+
+    // a course that charges money needs somewhere to send the tutor's share
+    const isPaidCourse = (isLiveOn && Number(liveFee) > 0) || (isRecordedOn && Number(recordedFee) > 0);
+    let payoutDetails;
+    if (isPaidCourse) {
+      const parsed = parsePayoutDetails(req.body);
+      if (parsed.error) {
+        return res.status(400).json({
+          success: false,
+          message: parsed.error
+        })
+      }
+      payoutDetails = parsed.details;
+    }
 
     const notesFile = req.files?.notes?.[0];
     if (!notesFile) {
@@ -158,6 +197,7 @@ export const createCourse = async (req, res) => {
       liveFee: isLiveOn ? liveFee : undefined,
       recordedFee: isRecordedOn ? recordedFee : undefined,
       liveSchedule: liveSchedule || undefined,
+      payoutDetails,
       recordedVideos
     });
 
@@ -194,7 +234,9 @@ export const createCourse = async (req, res) => {
 
 export const getMyCourses = async (req, res) => {
   try {
-    const courses = await Course.find({ tutorId: req.userId }).sort({ createdAt: -1 });
+    // payoutDetails is hidden by default (select:false) — this is the tutor's
+    // own list, so it's explicitly asked for here
+    const courses = await Course.find({ tutorId: req.userId }).select('+payoutDetails').sort({ createdAt: -1 });
 
     // attach a live student count and whether "Start Live Session" should be enabled right now
     const coursesWithExtras = await Promise.all(
@@ -224,7 +266,7 @@ export const getMyCourses = async (req, res) => {
 export const updateCourse = async (req, res) => {
   try {
     const { id } = req.params;
-    const course = await Course.findOne({ _id: id, tutorId: req.userId });
+    const course = await Course.findOne({ _id: id, tutorId: req.userId }).select('+payoutDetails');
     if (!course) {
       return res.status(404).json({
         success: false,
@@ -237,6 +279,18 @@ export const updateCourse = async (req, res) => {
     if (status) course.status = status;
     if (liveFee !== undefined && course.liveClassAvailable) course.liveFee = liveFee;
     if (recordedFee !== undefined && course.recordedVideoAvailable) course.recordedFee = recordedFee;
+
+    // payout details are only replaced when the tutor actually sent them
+    if (hasPayoutFields(req.body)) {
+      const parsed = parsePayoutDetails(req.body);
+      if (parsed.error) {
+        return res.status(400).json({
+          success: false,
+          message: parsed.error
+        })
+      }
+      course.payoutDetails = parsed.details;
+    }
 
     const liveSchedule = buildScheduleFromBody(req.body);
     if (liveSchedule) {

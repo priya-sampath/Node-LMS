@@ -4,6 +4,7 @@ import { Enrollment } from "../models/enrollmentModel.js";
 import { Payment } from "../models/paymentModel.js";
 import { Session } from "../models/sessionModel.js";
 import { Certificate } from "../models/certificateModel.js";
+import { tutorShareOf, payoutHoldDays, minPayoutAmount, payoutEligibleOn, isPayoutEligible } from "../utils/payout.js";
 
 export const getDashboardStats = async (req, res) => {
   try {
@@ -206,6 +207,136 @@ export const updateUserRole = async (req, res) => {
       success: true,
       message: `Role updated to ${role}`,
       data: user
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+}
+
+// money the platform has collected from students but not yet passed on to
+// tutors, grouped per course so the admin can see exactly where to send it.
+// Payments are split into "ready to pay" (older than the holding period) and
+// "still on hold" (could still be refunded).
+export const getPendingPayouts = async (req, res) => {
+  try {
+    const payments = await Payment.find({
+      status: 'paid',
+      amount: { $gt: 0 },
+      payoutStatus: { $ne: 'paid' }
+    })
+      .populate({
+        path: 'courseId',
+        select: 'title tutorId +payoutDetails',
+        populate: { path: 'tutorId', select: 'username email' }
+      })
+      .sort({ createdAt: 1 });
+
+    const minAmount = minPayoutAmount();
+    const now = new Date();
+    const byCourse = new Map();
+
+    for (const payment of payments) {
+      const course = payment.courseId;
+      if (!course) continue; // course was hard-deleted
+
+      const key = course._id.toString();
+      if (!byCourse.has(key)) {
+        byCourse.set(key, {
+          courseId: course._id,
+          courseTitle: course.title,
+          tutor: course.tutorId
+            ? { id: course.tutorId._id, username: course.tutorId.username, email: course.tutorId.email }
+            : null,
+          payoutDetails: course.payoutDetails || null,
+          paymentIds: [],          // only the payments that are ready to pay
+          paymentsCount: 0,
+          grossAmount: 0,
+          amountOwed: 0,           // ready to pay now
+          holdingAmount: 0,        // still inside the holding period
+          nextEligibleOn: null     // when the earliest held payment becomes payable
+        });
+      }
+      const entry = byCourse.get(key);
+      const share = tutorShareOf(payment.amount);
+
+      if (isPayoutEligible(payment.createdAt, now)) {
+        entry.paymentIds.push(payment._id);
+        entry.paymentsCount += 1;
+        entry.grossAmount += payment.amount;
+        entry.amountOwed += share;
+      } else {
+        entry.holdingAmount += share;
+        const eligibleOn = payoutEligibleOn(payment.createdAt);
+        if (!entry.nextEligibleOn || eligibleOn < entry.nextEligibleOn) {
+          entry.nextEligibleOn = eligibleOn;
+        }
+      }
+    }
+
+    const round2 = (value) => Math.round(value * 100) / 100;
+    const data = Array.from(byCourse.values()).map((entry) => ({
+      ...entry,
+      amountOwed: round2(entry.amountOwed),
+      holdingAmount: round2(entry.holdingAmount),
+      meetsMinimum: entry.amountOwed >= minAmount
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: "Pending payouts fetched successfully",
+      settings: { holdDays: payoutHoldDays(), minAmount },
+      data
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+}
+
+// the admin sends the money to the tutor (UPI / bank transfer) and then
+// records it here, with the bank's reference number
+export const markPayoutsPaid = async (req, res) => {
+  try {
+    const { paymentIds, reference } = req.body;
+
+    if (!Array.isArray(paymentIds) || paymentIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "paymentIds is required"
+      })
+    }
+    if (!reference || !String(reference).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter the UTR / UPI transaction reference of the transfer"
+      })
+    }
+
+    // enforced here too, not just in the page: nothing inside the holding
+    // period can be marked as paid out
+    const holdCutoff = new Date(Date.now() - payoutHoldDays() * 24 * 60 * 60 * 1000);
+
+    const result = await Payment.updateMany(
+      {
+        _id: { $in: paymentIds },
+        status: 'paid',
+        payoutStatus: { $ne: 'paid' },
+        createdAt: { $lte: holdCutoff }
+      },
+      { payoutStatus: 'paid', payoutReference: String(reference).trim(), paidOutAt: new Date() }
+    );
+
+    const skipped = paymentIds.length - result.modifiedCount;
+    return res.status(200).json({
+      success: true,
+      message: skipped > 0
+        ? `${result.modifiedCount} payment(s) marked as paid out. ${skipped} skipped (already paid out or still in the holding period).`
+        : `${result.modifiedCount} payment(s) marked as paid out`
     });
   } catch (error) {
     return res.status(500).json({

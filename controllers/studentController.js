@@ -87,7 +87,9 @@ export const enrollInCourse = async (req, res) => {
       courseId: id,
       amount,
       status: 'pending',
-      razorpayOrderId: order.id
+      razorpayOrderId: order.id,
+      wantsLive: !!wantsLive,
+      wantsRecorded: !!wantsRecorded
     });
 
     return res.status(200).json({
@@ -112,16 +114,18 @@ export const enrollInCourse = async (req, res) => {
 // called by the frontend right after Razorpay's widget reports a successful
 // payment — this is what actually creates the Enrollment record and flips
 // the matching Payment from pending to paid, only once the signature
-// proves the payment is genuine
+// proves the payment is genuine.
+//
+// IMPORTANT: which course and which options (live / recorded) were bought is
+// read from the Payment record we saved when the order was created, never
+// from the request body. Otherwise a student could pay for a cheap order and
+// then claim a different, more expensive course in this request.
 export const verifyPayment = async (req, res) => {
   try {
     const {
       razorpay_order_id,
       razorpay_payment_id,
-      razorpay_signature,
-      courseId,
-      wantsLive,
-      wantsRecorded
+      razorpay_signature
     } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
@@ -143,7 +147,21 @@ export const verifyPayment = async (req, res) => {
       })
     }
 
-    const course = await Course.findOne({ _id: courseId, status: 'active' });
+    // the order must be one this student actually started
+    const pendingPayment = await Payment.findOne({
+      razorpayOrderId: razorpay_order_id,
+      studentId: req.userId
+    });
+    if (!pendingPayment) {
+      return res.status(404).json({
+        success: false,
+        message: "No matching order found for this payment"
+      })
+    }
+
+    // a student who already paid keeps their place even if the tutor
+    // deactivated the course a moment ago, so no status filter here
+    const course = await Course.findById(pendingPayment.courseId);
     if (!course) {
       return res.status(404).json({
         success: false,
@@ -151,7 +169,35 @@ export const verifyPayment = async (req, res) => {
       })
     }
 
-    const alreadyEnrolled = await Enrollment.findOne({ studentId: req.userId, courseId });
+    // atomic pending -> paid flip, so a double click or a retry can't
+    // enroll the student twice
+    const payment = await Payment.findOneAndUpdate(
+      { _id: pendingPayment._id, status: 'pending' },
+      { status: 'paid' },
+      { new: true }
+    );
+    if (!payment) {
+      return res.status(200).json({
+        success: true,
+        message: "Payment already verified"
+      })
+    }
+
+    let wantsLive = payment.wantsLive;
+    let wantsRecorded = payment.wantsRecorded;
+    // orders created before these fields existed: fall back to the options
+    // saved in the Razorpay order's notes (set by our server, not the browser)
+    if (!wantsLive && !wantsRecorded && payment.amount > 0) {
+      try {
+        const order = await razorpay.orders.fetch(razorpay_order_id);
+        wantsLive = order.notes?.wantsLive === 'true';
+        wantsRecorded = order.notes?.wantsRecorded === 'true';
+      } catch (fetchError) {
+        console.error('Could not read order notes:', fetchError.message);
+      }
+    }
+
+    const alreadyEnrolled = await Enrollment.findOne({ studentId: req.userId, courseId: course._id });
     if (alreadyEnrolled) {
       return res.status(200).json({
         success: true,
@@ -159,32 +205,12 @@ export const verifyPayment = async (req, res) => {
       })
     }
 
-    const amount = (wantsLive ? course.liveFee : 0) + (wantsRecorded ? course.recordedFee : 0);
-
     const enrollment = await Enrollment.create({
       studentId: req.userId,
-      courseId,
+      courseId: course._id,
       wantsLive: !!wantsLive,
       wantsRecorded: !!wantsRecorded
     });
-
-    // flip the pending record from checkout-start into paid, rather than
-    // creating a fresh one — keeps one clean row per attempt
-    let payment = await Payment.findOneAndUpdate(
-      { razorpayOrderId: razorpay_order_id, studentId: req.userId },
-      { status: 'paid' },
-      { new: true }
-    );
-    if (!payment) {
-      // fallback in case the pending record wasn't found for some reason
-      payment = await Payment.create({
-        studentId: req.userId,
-        courseId,
-        amount,
-        status: 'paid',
-        razorpayOrderId: razorpay_order_id
-      });
-    }
 
     // best-effort — a failed email shouldn't block the student's enrollment
     try {

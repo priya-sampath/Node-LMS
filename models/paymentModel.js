@@ -27,6 +27,31 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // what the student chose at checkout, saved server-side so verifyPayment
+    // never has to trust values sent back by the browser
+    wantsLive: {
+      type: Boolean,
+      default: false,
+    },
+    wantsRecorded: {
+      type: Boolean,
+      default: false,
+    },
+    // tutor payout tracking — money is collected into the platform's Razorpay
+    // account, so each paid payment needs to be passed on to the tutor
+    payoutStatus: {
+      type: String,
+      enum: ['unpaid', 'paid'],
+      default: 'unpaid',
+    },
+    payoutReference: {
+      type: String,
+      default: null, // UTR / UPI transaction id entered by the admin
+    },
+    paidOutAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

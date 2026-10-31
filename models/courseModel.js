@@ -1,6 +1,21 @@
 import mongoose from 'mongoose';
 
 
+// where the tutor wants to receive their share for this course.
+// stored on every course (not just once per tutor) so a tutor can use a
+// different account for a different course
+const payoutDetailsSchema = new mongoose.Schema(
+  {
+    method: { type: String, enum: ['upi', 'bank'], required: true },
+    accountHolderName: { type: String, required: true, trim: true },
+    upiId: { type: String, trim: true, default: '' },
+    bankAccountNumber: { type: String, trim: true, default: '' },
+    ifscCode: { type: String, trim: true, uppercase: true, default: '' },
+    bankName: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
 const courseSchema = new mongoose.Schema(
   {
     title: {
@@ -62,6 +77,14 @@ const courseSchema = new mongoose.Schema(
       maxReschedules: { type: Number, default: 0 }, // how many times a student may reschedule over the whole course
       rescheduleWindowStart: { type: String, default: null }, // "HH:mm" — earliest a makeup slot can start, e.g. "09:00"
       rescheduleWindowEnd: { type: String, default: null },   // "HH:mm" — latest a makeup slot can end, e.g. "18:00"
+    },
+    // select:false = never returned by a normal query, so bank/UPI details can't
+    // leak through course search, populate(), the student course list, etc.
+    // Only code that asks for it explicitly (.select('+payoutDetails')) sees it.
+    payoutDetails: {
+      type: payoutDetailsSchema,
+      select: false,
+      default: undefined,
     },
     recordedVideos: [
       {
